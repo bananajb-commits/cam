@@ -3,7 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>カメラ撮影アプリ</title>
+  <title>カメラ & QRコードスキャンアプリ</title>
+  <!-- QRコード解析用ライブラリ -->
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
   <style>
     * {
       box-sizing: border-box;
@@ -37,13 +39,59 @@
       object-fit: cover;
     }
 
+    /* QR読み取り時のガイド枠 */
+    .qr-guide {
+      display: none;
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -60%);
+      width: 220px;
+      height: 220px;
+      border: 3px solid #007bff;
+      border-radius: 16px;
+      box-shadow: 0 0 0 4000px rgba(0, 0, 0, 0.4);
+      z-index: 5;
+      pointer-events: none;
+    }
+
+    /* QRコード読み取り結果ポップアップ */
+    .qr-result-card {
+      display: none;
+      position: absolute;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 20;
+      width: 90%;
+      max-width: 400px;
+      background: rgba(255, 255, 255, 0.95);
+      backdrop-filter: blur(8px);
+      padding: 16px;
+      border-radius: 12px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      text-align: center;
+    }
+
+    .qr-result-card p {
+      margin: 0 0 10px 0;
+      word-break: break-all;
+      font-size: 14px;
+    }
+
+    .qr-result-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: center;
+    }
+
     /* カメラ映像の上に重ねる操作バー */
     .controls {
       position: relative;
       z-index: 10;
       margin-bottom: 35px;
       display: flex;
-      gap: 12px;
+      gap: 10px;
       align-items: center;
       background: rgba(0, 0, 0, 0.4);
       padding: 10px 18px;
@@ -51,8 +99,8 @@
       backdrop-filter: blur(4px);
     }
 
-    button {
-      padding: 12px 20px;
+    button, .btn-link {
+      padding: 12px 18px;
       font-size: 14px;
       font-weight: bold;
       color: #fff;
@@ -60,6 +108,8 @@
       border: none;
       border-radius: 20px;
       cursor: pointer;
+      text-decoration: none;
+      display: inline-block;
     }
 
     button.danger {
@@ -70,7 +120,11 @@
       background-color: #6c757d;
     }
 
-    button:hover {
+    button.active {
+      background-color: #28a745;
+    }
+
+    button:hover, .btn-link:hover {
       opacity: 0.9;
     }
 
@@ -138,7 +192,6 @@
 
     .btn-download {
       background-color: #28a745;
-      display: inline-block;
     }
 
     canvas {
@@ -151,8 +204,23 @@
   <!-- 全画面カメラエリア -->
   <div class="camera-section">
     <video id="video" autoplay playsinline></video>
+
+    <!-- QRモード時のガイド枠 -->
+    <div id="qr-guide" class="qr-guide"></div>
+
+    <!-- QR検出結果ポップアップ -->
+    <div id="qr-result-card" class="qr-result-card">
+      <p id="qr-text"></p>
+      <div class="qr-result-actions">
+        <a id="qr-open-btn" href="#" target="_blank" class="btn-link" style="display:none;">開く</a>
+        <button id="qr-copy-btn" class="secondary">コピー</button>
+        <button id="qr-close-btn" class="danger">閉じる</button>
+      </div>
+    </div>
+
     <div class="controls">
       <button id="switch-cam" class="secondary">カメラ切替</button>
+      <button id="mode-toggle" class="secondary">モード: 写真</button>
       <button id="capture">撮影</button>
     </div>
     <div class="scroll-hint">↓ スクロールで撮影履歴</div>
@@ -175,77 +243,22 @@
     const canvas = document.getElementById('canvas');
     const captureBtn = document.getElementById('capture');
     const switchCamBtn = document.getElementById('switch-cam');
+    const modeToggleBtn = document.getElementById('mode-toggle');
     const clearAllBtn = document.getElementById('clear-all');
     const gallery = document.getElementById('gallery');
 
+    const qrGuide = document.getElementById('qr-guide');
+    const qrResultCard = document.getElementById('qr-result-card');
+    const qrText = document.getElementById('qr-text');
+    const qrOpenBtn = document.getElementById('qr-open-btn');
+    const qrCopyBtn = document.getElementById('qr-copy-btn');
+    const qrCloseBtn = document.getElementById('qr-close-btn');
+
     let currentStream = null;
-    let facingMode = 'user';
+    let facingMode = 'environment'; // QRコード用に初期設定を背面カメラに変更
+    let isQRMode = false;
+    let isScanning = false;
 
-    // --- IndexedDB（ブラウザ内保存機能）の設定 ---
-    const DB_NAME = 'CameraAppDB';
-    const STORE_NAME = 'photos';
-    let db = null;
-
-    function initDB() {
-      return new Promise((resolve, reject) => {
-        const request = indexedDB.open(DB_NAME, 1);
-
-        request.onupgradeneeded = (e) => {
-          const database = e.target.result;
-          if (!database.objectStoreNames.contains(STORE_NAME)) {
-            database.createObjectStore(STORE_NAME, { keyPath: 'id' });
-          }
-        };
-
-        request.onsuccess = (e) => {
-          db = e.target.result;
-          resolve(db);
-        };
-
-        request.onerror = (e) => reject(e.target.error);
-      });
-    }
-
-    // 保存されている写真をデータベースから復元
-    async function loadSavedPhotos() {
-      if (!db) return;
-      const tx = db.transaction(STORE_NAME, 'readonly');
-      const store = tx.objectStore(STORE_NAME);
-      const request = store.getAll();
-
-      request.onsuccess = () => {
-        const photos = request.result;
-        // 古い順からカードを読み込み（prependするため最終的に新しい順で並びます）
-        photos.sort((a, b) => a.id - b.id);
-        photos.forEach(photo => renderPhotoCard(photo.id, photo.dataUrl));
-      };
-    }
-
-    // 写真を IndexedDB に保存
-    async function savePhotoToDB(id, dataUrl) {
-      if (!db) return;
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      const store = tx.objectStore(STORE_NAME);
-      store.put({ id: id, dataUrl: dataUrl });
-    }
-
-    // 写真を IndexedDB から個別に削除
-    async function deletePhotoFromDB(id) {
-      if (!db) return;
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      const store = tx.objectStore(STORE_NAME);
-      store.delete(id);
-    }
-
-    // 全写真を IndexedDB から削除
-    async function clearAllFromDB() {
-      if (!db) return;
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      const store = tx.objectStore(STORE_NAME);
-      store.clear();
-    }
-
-    // --- カメラ操作 ---
     async function startCamera() {
       if (currentStream) {
         currentStream.getTracks().forEach(track => track.stop());
@@ -263,8 +276,110 @@
       }
     }
 
-    // 写真カードの描画処理
-    function renderPhotoCard(id, dataUrl) {
+    startCamera();
+
+    switchCamBtn.addEventListener('click', () => {
+      facingMode = (facingMode === 'user') ? 'environment' : 'user';
+      startCamera();
+    });
+
+    // 写真撮影
+    captureBtn.addEventListener('click', () => {
+      if (!currentStream) return;
+
+      const context = canvas.getContext('2d');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      const dataUrl = canvas.toDataURL('image/png');
+      addPhotoToGallery(dataUrl);
+    });
+
+    // モード切り替え（写真 / QR）
+    modeToggleBtn.addEventListener('click', () => {
+      isQRMode = !isQRMode;
+
+      if (isQRMode) {
+        modeToggleBtn.textContent = 'モード: QR';
+        modeToggleBtn.classList.add('active');
+        captureBtn.style.display = 'none';
+        qrGuide.style.display = 'block';
+        startQRScan();
+      } else {
+        modeToggleBtn.textContent = 'モード: 写真';
+        modeToggleBtn.classList.remove('active');
+        captureBtn.style.display = 'inline-block';
+        qrGuide.style.display = 'none';
+        stopQRScan();
+        qrResultCard.style.display = 'none';
+      }
+    });
+
+    // QRスキャンループ
+    function startQRScan() {
+      isScanning = true;
+      requestAnimationFrame(scanTick);
+    }
+
+    function stopQRScan() {
+      isScanning = false;
+    }
+
+    function scanTick() {
+      if (!isScanning || !isQRMode) return;
+
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const code = jsQR(imageData.data, imageData.width, imageData.height, {
+          inversionAttempts: "dontInvert",
+        });
+
+        if (code && code.data.trim() !== '') {
+          onQRCodeDetected(code.data);
+          return; // 検出したら一旦ループ停止
+        }
+      }
+
+      requestAnimationFrame(scanTick);
+    }
+
+    // QR検出時の処理
+    function onQRCodeDetected(data) {
+      stopQRScan();
+      qrText.textContent = data;
+      qrResultCard.style.display = 'block';
+
+      // URLかどうか判定して「開く」ボタンの表示切替
+      if (data.startsWith('http://') || data.startsWith('https://')) {
+        qrOpenBtn.href = data;
+        qrOpenBtn.style.display = 'inline-block';
+      } else {
+        qrOpenBtn.style.display = 'none';
+      }
+    }
+
+    // クリップボードにコピー
+    qrCopyBtn.addEventListener('click', () => {
+      navigator.clipboard.writeText(qrText.textContent).then(() => {
+        alert('コピーしました');
+      });
+    });
+
+    // 結果カードを閉じてスキャン再開
+    qrCloseBtn.addEventListener('click', () => {
+      qrResultCard.style.display = 'none';
+      if (isQRMode) {
+        startQRScan();
+      }
+    });
+
+    function addPhotoToGallery(dataUrl) {
       const card = document.createElement('div');
       card.className = 'photo-card';
 
@@ -276,15 +391,14 @@
 
       const downloadBtn = document.createElement('a');
       downloadBtn.href = dataUrl;
-      downloadBtn.download = `photo_${id}.jpg`;
+      downloadBtn.download = `photo_${Date.now()}.png`;
       downloadBtn.className = 'btn-download';
       downloadBtn.textContent = '保存';
 
       const deleteBtn = document.createElement('button');
       deleteBtn.className = 'danger';
       deleteBtn.textContent = '削除';
-      deleteBtn.addEventListener('click', async () => {
-        await deletePhotoFromDB(id);
+      deleteBtn.addEventListener('click', () => {
         card.remove();
       });
 
@@ -297,45 +411,9 @@
       gallery.prepend(card);
     }
 
-    // --- 初期化スクリプト ---
-    async function appInit() {
-      try {
-        await initDB();
-        await loadSavedPhotos();
-      } catch (e) {
-        console.error("データベースエラー:", e);
-      }
-      startCamera();
-    }
-
-    appInit();
-
-    // --- イベント処理 ---
-    switchCamBtn.addEventListener('click', () => {
-      facingMode = (facingMode === 'user') ? 'environment' : 'user';
-      startCamera();
-    });
-
-    captureBtn.addEventListener('click', async () => {
-      if (!currentStream) return;
-
-      const context = canvas.getContext('2d');
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      context.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-      // 容量削減のため JPEG 形式（画質 85%）でデータ化
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-      const photoId = Date.now();
-
-      await savePhotoToDB(photoId, dataUrl);
-      renderPhotoCard(photoId, dataUrl);
-    });
-
-    clearAllBtn.addEventListener('click', async () => {
+    clearAllBtn.addEventListener('click', () => {
       if (gallery.children.length === 0) return;
       if (confirm('すべての写真を削除しますか？')) {
-        await clearAllFromDB();
         gallery.innerHTML = '';
       }
     });
