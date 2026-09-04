@@ -181,6 +181,71 @@
     let currentStream = null;
     let facingMode = 'user';
 
+    // --- IndexedDB（ブラウザ内保存機能）の設定 ---
+    const DB_NAME = 'CameraAppDB';
+    const STORE_NAME = 'photos';
+    let db = null;
+
+    function initDB() {
+      return new Promise((resolve, reject) => {
+        const request = indexedDB.open(DB_NAME, 1);
+
+        request.onupgradeneeded = (e) => {
+          const database = e.target.result;
+          if (!database.objectStoreNames.contains(STORE_NAME)) {
+            database.createObjectStore(STORE_NAME, { keyPath: 'id' });
+          }
+        };
+
+        request.onsuccess = (e) => {
+          db = e.target.result;
+          resolve(db);
+        };
+
+        request.onerror = (e) => reject(e.target.error);
+      });
+    }
+
+    // 保存されている写真をデータベースから復元
+    async function loadSavedPhotos() {
+      if (!db) return;
+      const tx = db.transaction(STORE_NAME, 'readonly');
+      const store = tx.objectStore(STORE_NAME);
+      const request = store.getAll();
+
+      request.onsuccess = () => {
+        const photos = request.result;
+        // 古い順からカードを読み込み（prependするため最終的に新しい順で並びます）
+        photos.sort((a, b) => a.id - b.id);
+        photos.forEach(photo => renderPhotoCard(photo.id, photo.dataUrl));
+      };
+    }
+
+    // 写真を IndexedDB に保存
+    async function savePhotoToDB(id, dataUrl) {
+      if (!db) return;
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      store.put({ id: id, dataUrl: dataUrl });
+    }
+
+    // 写真を IndexedDB から個別に削除
+    async function deletePhotoFromDB(id) {
+      if (!db) return;
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      store.delete(id);
+    }
+
+    // 全写真を IndexedDB から削除
+    async function clearAllFromDB() {
+      if (!db) return;
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      store.clear();
+    }
+
+    // --- カメラ操作 ---
     async function startCamera() {
       if (currentStream) {
         currentStream.getTracks().forEach(track => track.stop());
@@ -198,26 +263,8 @@
       }
     }
 
-    startCamera();
-
-    switchCamBtn.addEventListener('click', () => {
-      facingMode = (facingMode === 'user') ? 'environment' : 'user';
-      startCamera();
-    });
-
-    captureBtn.addEventListener('click', () => {
-      if (!currentStream) return;
-
-      const context = canvas.getContext('2d');
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      context.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-      const dataUrl = canvas.toDataURL('image/png');
-      addPhotoToGallery(dataUrl);
-    });
-
-    function addPhotoToGallery(dataUrl) {
+    // 写真カードの描画処理
+    function renderPhotoCard(id, dataUrl) {
       const card = document.createElement('div');
       card.className = 'photo-card';
 
@@ -229,14 +276,15 @@
 
       const downloadBtn = document.createElement('a');
       downloadBtn.href = dataUrl;
-      downloadBtn.download = `photo_${Date.now()}.png`;
+      downloadBtn.download = `photo_${id}.jpg`;
       downloadBtn.className = 'btn-download';
       downloadBtn.textContent = '保存';
 
       const deleteBtn = document.createElement('button');
       deleteBtn.className = 'danger';
       deleteBtn.textContent = '削除';
-      deleteBtn.addEventListener('click', () => {
+      deleteBtn.addEventListener('click', async () => {
+        await deletePhotoFromDB(id);
         card.remove();
       });
 
@@ -249,9 +297,45 @@
       gallery.prepend(card);
     }
 
-    clearAllBtn.addEventListener('click', () => {
+    // --- 初期化スクリプト ---
+    async function appInit() {
+      try {
+        await initDB();
+        await loadSavedPhotos();
+      } catch (e) {
+        console.error("データベースエラー:", e);
+      }
+      startCamera();
+    }
+
+    appInit();
+
+    // --- イベント処理 ---
+    switchCamBtn.addEventListener('click', () => {
+      facingMode = (facingMode === 'user') ? 'environment' : 'user';
+      startCamera();
+    });
+
+    captureBtn.addEventListener('click', async () => {
+      if (!currentStream) return;
+
+      const context = canvas.getContext('2d');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      // 容量削減のため JPEG 形式（画質 85%）でデータ化
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+      const photoId = Date.now();
+
+      await savePhotoToDB(photoId, dataUrl);
+      renderPhotoCard(photoId, dataUrl);
+    });
+
+    clearAllBtn.addEventListener('click', async () => {
       if (gallery.children.length === 0) return;
       if (confirm('すべての写真を削除しますか？')) {
+        await clearAllFromDB();
         gallery.innerHTML = '';
       }
     });
