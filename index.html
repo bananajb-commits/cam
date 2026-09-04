@@ -4,7 +4,6 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>カメラ & QRコードスキャンアプリ</title>
-  <!-- QRコード解析用ライブラリ -->
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
   <style>
     * {
@@ -201,14 +200,11 @@
 </head>
 <body>
 
-  <!-- 全画面カメラエリア -->
   <div class="camera-section">
     <video id="video" autoplay playsinline></video>
 
-    <!-- QRモード時のガイド枠 -->
     <div id="qr-guide" class="qr-guide"></div>
 
-    <!-- QR検出結果ポップアップ -->
     <div id="qr-result-card" class="qr-result-card">
       <p id="qr-text"></p>
       <div class="qr-result-actions">
@@ -226,7 +222,6 @@
     <div class="scroll-hint">↓ スクロールで撮影履歴</div>
   </div>
 
-  <!-- 履歴ギャラリーエリア -->
   <div class="gallery-section">
     <div class="gallery-header">
       <h2 style="margin:0; font-size: 18px;">撮影した写真</h2>
@@ -255,7 +250,7 @@
     const qrCloseBtn = document.getElementById('qr-close-btn');
 
     let currentStream = null;
-    let facingMode = 'environment'; // QRコード用に初期設定を背面カメラに変更
+    let facingMode = 'environment';
     let isQRMode = false;
     let isScanning = false;
 
@@ -266,7 +261,12 @@
 
       try {
         currentStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: facingMode },
+          video: {
+            facingMode: facingMode,
+            // Full HDの解像度を優先要求（高画質化）
+            width: { ideal: 1920 },
+            height: { ideal: 1080 }
+          },
           audio: false
         });
         video.srcObject = currentStream;
@@ -292,7 +292,8 @@
       canvas.height = video.videoHeight;
       context.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-      const dataUrl = canvas.toDataURL('image/png');
+      // 高画質JPEGとしてキャプチャ (画質品質: 0.95)
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
       addPhotoToGallery(dataUrl);
     });
 
@@ -342,7 +343,7 @@
 
         if (code && code.data.trim() !== '') {
           onQRCodeDetected(code.data);
-          return; // 検出したら一旦ループ停止
+          return;
         }
       }
 
@@ -355,7 +356,6 @@
       qrText.textContent = data;
       qrResultCard.style.display = 'block';
 
-      // URLかどうか判定して「開く」ボタンの表示切替
       if (data.startsWith('http://') || data.startsWith('https://')) {
         qrOpenBtn.href = data;
         qrOpenBtn.style.display = 'inline-block';
@@ -391,7 +391,7 @@
 
       const downloadBtn = document.createElement('a');
       downloadBtn.href = dataUrl;
-      downloadBtn.download = `photo_${Date.now()}.png`;
+      downloadBtn.download = `photo_${Date.now()}.jpg`;
       downloadBtn.className = 'btn-download';
       downloadBtn.textContent = '保存';
 
