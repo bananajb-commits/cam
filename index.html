@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>カメラ撮影アプリ</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      font-family: sans-serif;
+      margin: 0;
+      background-color: #f4f4f9;
+      color: #333;
+    }
+
+    /* 画面いっぱいのカメラセクション */
+    .camera-section {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      background-color: #000;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      align-items: center;
+    }
+
+    video {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    /* カメラ映像の上に重ねる操作バー */
+    .controls {
+      position: relative;
+      z-index: 10;
+      margin-bottom: 35px;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      background: rgba(0, 0, 0, 0.4);
+      padding: 10px 18px;
+      border-radius: 30px;
+      backdrop-filter: blur(4px);
+    }
+
+    button {
+      padding: 12px 20px;
+      font-size: 14px;
+      font-weight: bold;
+      color: #fff;
+      background-color: #007bff;
+      border: none;
+      border-radius: 20px;
+      cursor: pointer;
+    }
+
+    button.danger {
+      background-color: #dc3545;
+    }
+
+    button.secondary {
+      background-color: #6c757d;
+    }
+
+    button:hover {
+      opacity: 0.9;
+    }
+
+    .scroll-hint {
+      position: absolute;
+      bottom: 8px;
+      z-index: 10;
+      color: rgba(255, 255, 255, 0.8);
+      font-size: 12px;
+      pointer-events: none;
+    }
+
+    /* スクロール後に現れるギャラリーエリア */
+    .gallery-section {
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 30px 20px;
+    }
+
+    .gallery-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 15px;
+      border-bottom: 1px solid #ccc;
+    }
+
+    .gallery {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+      gap: 12px;
+      margin-top: 20px;
+    }
+
+    .photo-card {
+      background: #fff;
+      padding: 8px;
+      border-radius: 8px;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .photo-card img {
+      width: 100%;
+      border-radius: 4px;
+    }
+
+    .photo-actions {
+      display: flex;
+      gap: 5px;
+    }
+
+    .photo-actions button, .photo-actions a {
+      flex: 1;
+      padding: 6px 0;
+      font-size: 12px;
+      text-decoration: none;
+      color: white;
+      border-radius: 4px;
+      text-align: center;
+      box-sizing: border-box;
+    }
+
+    .btn-download {
+      background-color: #28a745;
+      display: inline-block;
+    }
+
+    canvas {
+      display: none;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- 全画面カメラエリア -->
+  <div class="camera-section">
+    <video id="video" autoplay playsinline></video>
+    <div class="controls">
+      <button id="switch-cam" class="secondary">カメラ切替</button>
+      <button id="capture">撮影</button>
+    </div>
+    <div class="scroll-hint">↓ スクロールで撮影履歴</div>
+  </div>
+
+  <!-- 履歴ギャラリーエリア -->
+  <div class="gallery-section">
+    <div class="gallery-header">
+      <h2 style="margin:0; font-size: 18px;">撮影した写真</h2>
+      <button id="clear-all" class="danger">全消去</button>
+    </div>
+
+    <div id="gallery" class="gallery"></div>
+  </div>
+
+  <canvas id="canvas"></canvas>
+
+  <script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const captureBtn = document.getElementById('capture');
+    const switchCamBtn = document.getElementById('switch-cam');
+    const clearAllBtn = document.getElementById('clear-all');
+    const gallery = document.getElementById('gallery');
+
+    let currentStream = null;
+    let facingMode = 'user';
+
+    async function startCamera() {
+      if (currentStream) {
+        currentStream.getTracks().forEach(track => track.stop());
+      }
+
+      try {
+        currentStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: facingMode },
+          audio: false
+        });
+        video.srcObject = currentStream;
+      } catch (err) {
+        console.error("カメラの起動失敗:", err);
+        alert("カメラの起動に失敗しました。カメラの許可設定を確認してください。");
+      }
+    }
+
+    startCamera();
+
+    switchCamBtn.addEventListener('click', () => {
+      facingMode = (facingMode === 'user') ? 'environment' : 'user';
+      startCamera();
+    });
+
+    captureBtn.addEventListener('click', () => {
+      if (!currentStream) return;
+
+      const context = canvas.getContext('2d');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      const dataUrl = canvas.toDataURL('image/png');
+      addPhotoToGallery(dataUrl);
+    });
+
+    function addPhotoToGallery(dataUrl) {
+      const card = document.createElement('div');
+      card.className = 'photo-card';
+
+      const img = document.createElement('img');
+      img.src = dataUrl;
+
+      const actions = document.createElement('div');
+      actions.className = 'photo-actions';
+
+      const downloadBtn = document.createElement('a');
+      downloadBtn.href = dataUrl;
+      downloadBtn.download = `photo_${Date.now()}.png`;
+      downloadBtn.className = 'btn-download';
+      downloadBtn.textContent = '保存';
+
+      const deleteBtn = document.createElement('button');
+      deleteBtn.className = 'danger';
+      deleteBtn.textContent = '削除';
+      deleteBtn.addEventListener('click', () => {
+        card.remove();
+      });
+
+      actions.appendChild(downloadBtn);
+      actions.appendChild(deleteBtn);
+
+      card.appendChild(img);
+      card.appendChild(actions);
+
+      gallery.prepend(card);
+    }
+
+    clearAllBtn.addEventListener('click', () => {
+      if (gallery.children.length === 0) return;
+      if (confirm('すべての写真を削除しますか？')) {
+        gallery.innerHTML = '';
+      }
+    });
+  </script>
+
+</body>
+</html>
